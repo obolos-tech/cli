@@ -21,6 +21,10 @@
  *   npx @obolos_tech/cli anp bid <cid> --price 25 --delivery 48h
  *   npx @obolos_tech/cli anp accept <cid> --bid <bid_cid>
  *   npx @obolos_tech/cli anp verify <cid>
+ *   npx @obolos_tech/cli reputation check 16907
+ *   npx @obolos_tech/cli reputation check 16907 --chain ethereum
+ *   npx @obolos_tech/cli reputation compare 123 456 789
+ *   npx @obolos_tech/cli rep compare base:123 ethereum:456
  */
 
 import { homedir } from 'os';
@@ -2487,6 +2491,212 @@ async function cmdAnp(args: string[]) {
   }
 }
 
+// ─── Reputation Commands ─────────────────────────────────────────────────────
+
+function tierColor(tier: string): string {
+  switch (tier.toLowerCase()) {
+    case 'diamond':     return `${c.bold}${c.cyan}${tier}${c.reset}`;
+    case 'platinum':    return `${c.bold}${c.white}${tier}${c.reset}`;
+    case 'gold':
+    case 'established': return `${c.yellow}${tier}${c.reset}`;
+    case 'silver':
+    case 'developing':  return `${c.dim}${c.white}${tier}${c.reset}`;
+    case 'bronze':
+    case 'limited':     return `${c.dim}${tier}${c.reset}`;
+    case 'flagged':     return `${c.red}${tier}${c.reset}`;
+    default:            return `${c.dim}${tier}${c.reset}`;
+  }
+}
+
+function scoreBar(score: number): string {
+  const width = 20;
+  const filled = Math.round((score / 100) * width);
+  const empty = width - filled;
+  let color = c.red;
+  if (score >= 70) color = c.green;
+  else if (score >= 40) color = c.yellow;
+  return `${color}${'█'.repeat(filled)}${c.dim}${'░'.repeat(empty)}${c.reset} ${color}${score}${c.reset}/100`;
+}
+
+function verdictLabel(pass: boolean): string {
+  return pass
+    ? `${c.green}✔ PASS${c.reset}`
+    : `${c.red}✘ FAIL${c.reset}`;
+}
+
+async function cmdReputationCheck(args: string[]) {
+  const agentId = getPositional(args, 0);
+  if (!agentId) {
+    console.error(`${c.red}Usage: obolos reputation check <agentId> [--chain base]${c.reset}`);
+    process.exit(1);
+  }
+
+  const chain = getFlag(args, 'chain') || 'base';
+
+  console.log(`\n${c.dim}Checking reputation for agent ${c.bold}${agentId}${c.reset}${c.dim} on ${chain}...${c.reset}\n`);
+
+  const data = await apiGet(`/api/anp/reputation/${encodeURIComponent(agentId)}?chain=${encodeURIComponent(chain)}`);
+
+  // Header
+  console.log(`${c.bold}${c.cyan}Reputation Report${c.reset}  ${c.dim}Agent ${agentId}${c.reset}`);
+  console.log(`${c.dim}${'─'.repeat(60)}${c.reset}`);
+
+  // Combined score
+  const combined = data.combined || {};
+  console.log(`  ${c.bold}Combined Score:${c.reset}  ${scoreBar(combined.score ?? 0)}`);
+  console.log(`  ${c.bold}Tier:${c.reset}            ${tierColor(combined.tier ?? 'unknown')}`);
+  console.log(`  ${c.bold}Verdict:${c.reset}         ${verdictLabel(combined.pass ?? false)}`);
+  console.log(`  ${c.bold}Chain:${c.reset}           ${data.chain || chain}`);
+  if (data.address) {
+    console.log(`  ${c.bold}Address:${c.reset}         ${data.address}`);
+  }
+
+  // Sybil warning
+  if (combined.hasSybilFlags) {
+    console.log(`\n  ${c.red}${c.bold}⚠ Sybil flags detected${c.reset}`);
+  }
+
+  // Individual provider scores
+  const scores = data.scores || [];
+  if (scores.length > 0) {
+    console.log(`\n  ${c.bold}${c.cyan}Provider Scores (${scores.length})${c.reset}`);
+    console.log(`  ${c.dim}${'─'.repeat(56)}${c.reset}`);
+
+    for (const s of scores) {
+      const provider = s.provider === 'rnwy' ? 'RNWY' : s.provider === 'agentproof' ? 'AgentProof' : s.provider;
+      console.log(`\n  ${c.bold}${provider}${c.reset}`);
+      console.log(`    Score:   ${scoreBar(s.score ?? 0)}`);
+      console.log(`    Tier:    ${tierColor(s.tier ?? 'unknown')}`);
+      console.log(`    Verdict: ${verdictLabel(s.pass ?? false)}`);
+
+      if (s.sybilFlags && s.sybilFlags.length > 0) {
+        console.log(`    ${c.red}Sybil:   ${s.sybilFlags.join(', ')}${c.reset}`);
+      }
+      if (s.riskFlags && s.riskFlags.length > 0) {
+        console.log(`    ${c.yellow}Risk:    ${s.riskFlags.join(', ')}${c.reset}`);
+      }
+    }
+  } else {
+    console.log(`\n  ${c.dim}No provider scores available.${c.reset}`);
+  }
+
+  console.log(`\n  ${c.dim}Checked: ${data.checkedAt ? formatDate(data.checkedAt) : 'just now'}${c.reset}\n`);
+}
+
+async function cmdReputationCompare(args: string[]) {
+  // Collect all positional args (agent IDs, optionally prefixed with chain:)
+  const agents: { agentId: number; chain: string }[] = [];
+  for (const arg of args) {
+    if (arg.startsWith('--')) continue;
+    const parts = arg.split(':');
+    if (parts.length === 2) {
+      const id = parseInt(parts[1], 10);
+      if (isNaN(id)) { console.error(`${c.red}Invalid agent ID: ${parts[1]}${c.reset}`); process.exit(1); }
+      agents.push({ agentId: id, chain: parts[0] });
+    } else {
+      const id = parseInt(parts[0], 10);
+      if (isNaN(id)) { console.error(`${c.red}Invalid agent ID: ${parts[0]}${c.reset}`); process.exit(1); }
+      agents.push({ agentId: id, chain: 'base' });
+    }
+  }
+
+  if (agents.length < 2) {
+    console.error(`${c.red}Usage: obolos reputation compare <id1> <id2> [id3...]${c.reset}`);
+    console.error(`${c.dim}  Prefix with chain:  obolos rep compare base:123 ethereum:456${c.reset}`);
+    process.exit(1);
+  }
+
+  console.log(`\n${c.dim}Comparing ${agents.length} agents in parallel...${c.reset}\n`);
+
+  // Fetch all in parallel
+  const results = await Promise.all(
+    agents.map(a =>
+      apiGet(`/api/anp/reputation/${a.agentId}?chain=${encodeURIComponent(a.chain)}`)
+        .catch((err: Error) => ({ agentId: a.agentId, chain: a.chain, error: err.message }))
+    )
+  );
+
+  // Sort by combined score descending
+  const sorted = results
+    .map((r: any, i: number) => ({ ...r, _input: agents[i] }))
+    .sort((a: any, b: any) => ((b.combined?.score ?? -1) - (a.combined?.score ?? -1)));
+
+  // Table header
+  console.log(`${c.bold}${c.cyan}Reputation Comparison${c.reset}`);
+  console.log(`${c.dim}${'─'.repeat(74)}${c.reset}`);
+  console.log(`  ${c.bold}${'#'.padEnd(4)}${'Agent'.padEnd(12)}${'Chain'.padEnd(12)}${'Score'.padEnd(24)}${'Tier'.padEnd(14)}Verdict${c.reset}`);
+  console.log(`  ${c.dim}${'─'.repeat(70)}${c.reset}`);
+
+  sorted.forEach((r: any, i: number) => {
+    const rank = `${i + 1}.`.padEnd(4);
+    const agent = String(r._input.agentId).padEnd(12);
+    const chain = r._input.chain.padEnd(12);
+
+    if (r.error) {
+      console.log(`  ${rank}${agent}${chain}${c.red}Error: ${r.error}${c.reset}`);
+      return;
+    }
+
+    const combined = r.combined || {};
+    const score = combined.score ?? 0;
+    const bar = scoreBar(score);
+    // scoreBar has ANSI codes so we can't pad it normally; we pad the raw number
+    const barPadded = bar; // already formatted
+    const tier = tierColor(combined.tier ?? 'unknown');
+    const verdict = verdictLabel(combined.pass ?? false);
+    const sybil = combined.hasSybilFlags ? ` ${c.red}⚠ sybil${c.reset}` : '';
+
+    console.log(`  ${rank}${agent}${chain}${barPadded}  ${tier.padEnd(14)}  ${verdict}${sybil}`);
+  });
+
+  console.log(`${c.dim}${'─'.repeat(74)}${c.reset}\n`);
+}
+
+function showReputationHelp() {
+  console.log(`
+${c.bold}${c.cyan}obolos reputation${c.reset} — Agent trust & reputation checking
+
+${c.bold}Subcommands:${c.reset}
+  check <agentId>              Check reputation for an agent
+  compare <id1> <id2> [...]    Compare multiple agents side-by-side
+
+${c.bold}Options (check):${c.reset}
+  --chain <chain>              Blockchain to check (default: base)
+
+${c.bold}Examples:${c.reset}
+  obolos reputation check 16907
+  obolos reputation check 16907 --chain ethereum
+  obolos rep check 16907
+  obolos reputation compare 123 456 789
+  obolos rep compare base:123 base:456 ethereum:789
+`);
+}
+
+async function cmdReputation(args: string[]) {
+  const sub = args[0];
+  const subArgs = args.slice(1);
+
+  switch (sub) {
+    case 'check':
+      await cmdReputationCheck(subArgs);
+      break;
+    case 'compare':
+    case 'cmp':
+      await cmdReputationCompare(subArgs);
+      break;
+    case 'help':
+    case '--help':
+    case '-h':
+    case undefined:
+      showReputationHelp();
+      break;
+    default:
+      console.error(`${c.red}Unknown reputation subcommand: ${sub}${c.reset}`);
+      showReputationHelp();
+      process.exit(1);
+  }
+}
+
 // ─── Help ───────────────────────────────────────────────────────────────────
 
 function showHelp() {
@@ -2532,6 +2742,12 @@ ${c.bold}ANP Commands (Agent Negotiation Protocol):${c.reset}
   obolos anp verify <cid>       Verify document integrity
   obolos anp help               Show ANP command help
 
+${c.bold}Reputation Commands:${c.reset}
+  obolos reputation check <id>  Check agent trust score
+  obolos reputation compare ... Compare multiple agents
+  obolos reputation help        Show reputation command help
+  ${c.dim}(alias: obolos rep ...)${c.reset}
+
 ${c.bold}Call Options:${c.reset}
   --method POST|GET|PUT          HTTP method (default: GET)
   --body '{"key":"value"}'       Request body (JSON)
@@ -2555,6 +2771,10 @@ ${c.bold}Examples:${c.reset}
   obolos anp create --title "Analyze data" --min-budget 5 --max-budget 50 --deadline 7d
   obolos anp bid sha256-abc... --price 25 --delivery 48h --message "I can do this"
   obolos anp accept sha256-listing... --bid sha256-bid...
+  obolos rep check 16907
+  obolos rep check 16907 --chain ethereum
+  obolos rep compare 123 456 789
+  obolos rep compare base:123 ethereum:456
 `);
 }
 
@@ -2603,6 +2823,10 @@ async function main() {
       break;
     case 'anp':
       await cmdAnp(commandArgs);
+      break;
+    case 'reputation':
+    case 'rep':
+      await cmdReputation(commandArgs);
       break;
     case 'help':
     case '--help':
