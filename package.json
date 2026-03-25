@@ -1,6 +1,6 @@
 {
   "name": "@obolos_tech/cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "CLI for the Obolos x402 API marketplace — search, negotiate (ANP), and call pay-per-use APIs",
   "type": "module",
   "main": "dist/index.js",
