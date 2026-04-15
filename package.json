@@ -1,20 +1,34 @@
 {
   "name": "@obolos_tech/cli",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "CLI for the Obolos x402 API marketplace — search, negotiate (ANP), and call pay-per-use APIs",
   "type": "module",
   "main": "dist/index.js",
   "files": [
     "dist",
+    "scripts",
     "README.md"
   ],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./registry": { "types": "./dist/registry.d.ts", "default": "./dist/registry.js" },
+    "./commands": { "types": "./dist/commands/index.d.ts", "default": "./dist/commands/index.js" },
+    "./runtime/config": { "types": "./dist/runtime/config.d.ts", "default": "./dist/runtime/config.js" },
+    "./runtime/http": { "types": "./dist/runtime/http.d.ts", "default": "./dist/runtime/http.js" },
+    "./runtime/output": { "types": "./dist/runtime/output.d.ts", "default": "./dist/runtime/output.js" },
+    "./runtime/errors": { "types": "./dist/runtime/errors.d.ts", "default": "./dist/runtime/errors.js" },
+    "./schema/json-schema": { "types": "./dist/schema/json-schema.d.ts", "default": "./dist/schema/json-schema.js" },
+    "./schema/zod-shape": { "types": "./dist/schema/zod-shape.d.ts", "default": "./dist/schema/zod-shape.js" }
+  },
   "bin": {
     "obolos": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "lint": "node scripts/lint-stdout-purity.mjs",
+    "prebuild": "npm run lint"
   },
   "keywords": [
     "x402",
@@ -29,8 +43,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@obolos_tech/anp-sdk": "^0.1.0",
-    "viem": "^2.45.2"
+    "@obolos_tech/anp-sdk": "^0.2.0",
+    "viem": "^2.45.2",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
