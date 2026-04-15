@@ -1,6 +1,6 @@
 {
   "name": "@obolos_tech/cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "CLI for the Obolos x402 API marketplace — search, negotiate (ANP), and call pay-per-use APIs",
   "type": "module",
   "main": "dist/index.js",
@@ -10,15 +10,42 @@
     "README.md"
   ],
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./registry": { "types": "./dist/registry.d.ts", "default": "./dist/registry.js" },
-    "./commands": { "types": "./dist/commands/index.d.ts", "default": "./dist/commands/index.js" },
-    "./runtime/config": { "types": "./dist/runtime/config.d.ts", "default": "./dist/runtime/config.js" },
-    "./runtime/http": { "types": "./dist/runtime/http.d.ts", "default": "./dist/runtime/http.js" },
-    "./runtime/output": { "types": "./dist/runtime/output.d.ts", "default": "./dist/runtime/output.js" },
-    "./runtime/errors": { "types": "./dist/runtime/errors.d.ts", "default": "./dist/runtime/errors.js" },
-    "./schema/json-schema": { "types": "./dist/schema/json-schema.d.ts", "default": "./dist/schema/json-schema.js" },
-    "./schema/zod-shape": { "types": "./dist/schema/zod-shape.d.ts", "default": "./dist/schema/zod-shape.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry.d.ts",
+      "default": "./dist/registry.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/index.d.ts",
+      "default": "./dist/commands/index.js"
+    },
+    "./runtime/config": {
+      "types": "./dist/runtime/config.d.ts",
+      "default": "./dist/runtime/config.js"
+    },
+    "./runtime/http": {
+      "types": "./dist/runtime/http.d.ts",
+      "default": "./dist/runtime/http.js"
+    },
+    "./runtime/output": {
+      "types": "./dist/runtime/output.d.ts",
+      "default": "./dist/runtime/output.js"
+    },
+    "./runtime/errors": {
+      "types": "./dist/runtime/errors.d.ts",
+      "default": "./dist/runtime/errors.js"
+    },
+    "./schema/json-schema": {
+      "types": "./dist/schema/json-schema.d.ts",
+      "default": "./dist/schema/json-schema.js"
+    },
+    "./schema/zod-shape": {
+      "types": "./dist/schema/zod-shape.d.ts",
+      "default": "./dist/schema/zod-shape.js"
+    }
   },
   "bin": {
     "obolos": "dist/index.js"
