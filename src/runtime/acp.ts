@@ -19,6 +19,11 @@ export const ACP_ABI = [
       { name: 'hook', type: 'address' },
     ],
     outputs: [{ name: 'jobId', type: 'uint256' }] },
+  { type: 'function', name: 'setBudget', stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'jobId', type: 'uint256' }, { name: 'amount', type: 'uint256' },
+      { name: 'optParams', type: 'bytes' },
+    ], outputs: [] },
   { type: 'function', name: 'fund', stateMutability: 'nonpayable',
     inputs: [
       { name: 'jobId', type: 'uint256' }, { name: 'expectedBudget', type: 'uint256' },
@@ -59,11 +64,26 @@ export const ERC20_ABI = [
 
 async function chain() { return (await import('viem/chains')).base; }
 
+/**
+ * Create an ACP job on-chain AND set the budget in one atomic helper.
+ *
+ * `createJob` on ACP leaves budget at zero; `fund()` later reverts with
+ * BudgetNotSet until a separate `setBudget(jobId, amount, '0x')` call
+ * lands. Bundling the two here means the on-chain job is always in a
+ * state where `fund` can succeed as soon as the provider and evaluator
+ * are set. Skipped only if no budget is supplied (open-ended job).
+ */
 export async function createJobOnChain(
   config: ObolosConfig,
-  params: { provider?: string; evaluator: string; expiredAt: number; description: string },
-): Promise<{ txHash: string; chainJobId: string | null }> {
-  const { decodeEventLog } = await import('viem');
+  params: {
+    provider?: string;
+    evaluator: string;
+    expiredAt: number;
+    description: string;
+    budgetUsd?: string; // omit → no setBudget call
+  },
+): Promise<{ txHash: string; chainJobId: string | null; setBudgetTxHash: string | null }> {
+  const { decodeEventLog, parseUnits } = await import('viem');
   const { account, publicClient, walletClient } = await getClients(config);
   const txHash = await walletClient.writeContract({
     address: ACP_ADDRESS, abi: ACP_ABI, functionName: 'createJob',
@@ -84,7 +104,20 @@ export async function createJobOnChain(
       if (decoded.eventName === 'JobCreated') { chainJobId = ((decoded.args as any).jobId).toString(); break; }
     } catch {}
   }
-  return { txHash, chainJobId };
+
+  // setBudget — must be called before fund() can succeed.
+  let setBudgetTxHash: string | null = null;
+  if (chainJobId && params.budgetUsd) {
+    const amount = parseUnits(params.budgetUsd, 6);
+    setBudgetTxHash = await walletClient.writeContract({
+      address: ACP_ADDRESS, abi: ACP_ABI, functionName: 'setBudget',
+      args: [BigInt(chainJobId), amount, '0x'],
+      account, chain: await chain(),
+    });
+    await publicClient.waitForTransactionReceipt({ hash: setBudgetTxHash });
+  }
+
+  return { txHash, chainJobId, setBudgetTxHash };
 }
 
 export async function fundOnChain(config: ObolosConfig, chainJobId: string, budgetUsd: string): Promise<string> {

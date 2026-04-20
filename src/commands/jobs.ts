@@ -108,36 +108,54 @@ export const jobCreateCmd = defineCommand({
     provider: { type: 'string', description: 'Specific provider address (optional)' },
     budget: { type: 'number', description: 'Budget in USDC' },
     expires: { type: 'string', description: 'Expiry ("24h", "7d", or ISO date)', default: '7d' },
+    'off-chain': { type: 'boolean', description: 'Allow trust-based off-chain job if on-chain broadcast fails', default: false },
   },
   examples: [`obolos job create --title "Analyze data" --evaluator 0xABC --budget 5.00 --expires 7d`],
   mcp: { expose: true, destructive: true },
   async run(input, ctx) {
     const headers = await walletHeader(ctx.config);
     const expiredAt = Math.floor(new Date(parseRelativeTime(String(input.expires))).getTime() / 1000);
-    let chainJobId: string | null = null, chainTxHash: string | null = null;
+    let chainJobId: string | null = null;
+    let chainTxHash: string | null = null;
+    let setBudgetTxHash: string | null = null;
     try {
       const result = await createJobOnChain(ctx.config, {
         provider: input.provider as string | undefined,
         evaluator: String(input.evaluator),
         expiredAt,
         description: (input.description as string) || String(input.title),
+        budgetUsd: input.budget != null ? String(input.budget) : undefined,
       });
       chainJobId = result.chainJobId;
       chainTxHash = result.txHash;
+      setBudgetTxHash = result.setBudgetTxHash;
     } catch (err: any) {
-      // fall through to backend-only
-      return { warning: `On-chain creation failed: ${err.message}`, job: await postBackend() };
+      // On-chain fall-through is now opt-in. Without --off-chain, a failed
+      // on-chain broadcast short-circuits — we do NOT want to create a
+      // backend-only row that quietly advertises an escrow that doesn't
+      // exist on ACP. Users pass --off-chain explicitly when they're ok
+      // with trust-based coordination.
+      if (input['off-chain']) {
+        return { warning: `On-chain creation failed: ${err.message}. Proceeding off-chain.`, job: await postBackend() };
+      }
+      throw new Error(
+        `On-chain ACP createJob failed: ${err.message}\n` +
+        `Pass --off-chain to create a trust-based backend row anyway.`,
+      );
     }
-    return { chainJobId, chainTxHash, job: await postBackend() };
+    return { chainJobId, chainTxHash, setBudgetTxHash, job: await postBackend() };
 
     async function postBackend() {
-      const payload: Record<string, any> = { title: input.title, evaluator: input.evaluator };
+      const payload: Record<string, any> = {
+        title: input.title,
+        evaluator_address: input.evaluator,
+      };
       if (input.description) payload.description = input.description;
-      if (input.provider) payload.provider = input.provider;
+      if (input.provider) payload.provider_address = input.provider;
       if (input.budget != null) payload.budget = input.budget;
-      payload.expires_at = parseRelativeTime(String(input.expires));
+      payload.expired_at = parseRelativeTime(String(input.expires));
       if (chainJobId) payload.chain_job_id = chainJobId;
-      if (chainTxHash) payload.chain_tx_hash = chainTxHash;
+      if (chainTxHash) payload.tx_hash = chainTxHash;
       const data = await ctx.http.post<any>('/api/jobs', payload, headers);
       return data.job || data;
     }
@@ -145,10 +163,11 @@ export const jobCreateCmd = defineCommand({
   format(out) {
     const lines = ['', `${c.green}Job created.${c.reset}`];
     if (out.warning) lines.push(`${c.yellow}${out.warning}${c.reset}`);
-    lines.push(`  ${c.bold}ID:${c.reset}       ${out.job.id}`);
-    if (out.chainJobId) lines.push(`  ${c.bold}Chain ID:${c.reset} ${out.chainJobId}`);
-    if (out.chainTxHash) lines.push(`  ${c.bold}Tx:${c.reset}       ${c.cyan}${out.chainTxHash}${c.reset}`);
-    lines.push(`  ${c.bold}Status:${c.reset}   ${statusColor(out.job.status || 'open')}`);
+    lines.push(`  ${c.bold}ID:${c.reset}          ${out.job.id}`);
+    if (out.chainJobId) lines.push(`  ${c.bold}Chain ID:${c.reset}    ${out.chainJobId}`);
+    if (out.chainTxHash) lines.push(`  ${c.bold}createJob tx:${c.reset} ${c.cyan}${out.chainTxHash}${c.reset}`);
+    if (out.setBudgetTxHash) lines.push(`  ${c.bold}setBudget tx:${c.reset} ${c.cyan}${out.setBudgetTxHash}${c.reset}`);
+    lines.push(`  ${c.bold}Status:${c.reset}      ${statusColor(out.job.status || 'open')}`);
     lines.push('', `${c.dim}Next: obolos job fund ${out.job.id}${c.reset}`);
     return lines.join('\n');
   },
@@ -159,23 +178,55 @@ export const jobCreateCmd = defineCommand({
 export const jobFundCmd = defineCommand({
   name: 'job.fund',
   summary: 'Fund the escrow for a job (approves USDC + calls fund() on ACP).',
-  input: { id: { type: 'string', description: 'Job id', positional: 0, required: true } },
+  input: {
+    id: { type: 'string', description: 'Job id', positional: 0, required: true },
+    'off-chain': { type: 'boolean', description: 'Mark the backend row funded without on-chain escrow (trust-based)', default: false },
+  },
   examples: ['obolos job fund abc123'],
   mcp: { expose: true, destructive: true },
   async run(input, ctx) {
     const headers = await walletHeader(ctx.config);
     const existing = await ctx.http.get<any>(`/api/jobs/${encodeURIComponent(String(input.id))}`);
     const job = existing.job || existing;
-    let txHash: string | null = null, warning: string | null = null;
-    if (job.chain_job_id && job.budget != null) {
-      try { txHash = await fundOnChain(ctx.config, job.chain_job_id, String(job.budget)); }
-      catch (err: any) { warning = `On-chain funding failed: ${err.message}`; }
+
+    // On-chain-by-default: without a chain_job_id the only honest thing
+    // to do is refuse the fund and ask the user to decide. Silent fall-
+    // through to an off-chain "funded" flag was the bug that left $2
+    // stranded in backend-only state while the ACP contract thought
+    // nothing had happened.
+    if (!job.chain_job_id) {
+      if (!input['off-chain']) {
+        throw new Error(
+          `Job ${job.id} has no chain_job_id — there is no on-chain escrow to fund.\n` +
+          `If this job was created as a platform listing and accepted before the CLI was\n` +
+          `chain-first, re-create on-chain with:  obolos job create --provider ${job.provider_address} --evaluator ${job.evaluator_address} --budget ${job.budget} --title "${job.title}"\n` +
+          `Or pass --off-chain to mark this trust-based backend row funded without escrow.`,
+        );
+      }
+      const data = await ctx.http.post<any>(`/api/jobs/${encodeURIComponent(String(input.id))}/fund`, {}, headers);
+      return { job: data.job || data, txHash: null, warning: 'Funded off-chain (trust-based). No USDC held in escrow.' };
     }
-    const payload: Record<string, any> = {};
-    if (txHash) payload.tx_hash = txHash;
-    if (job.chain_job_id) payload.chain_job_id = job.chain_job_id;
-    const data = await ctx.http.post<any>(`/api/jobs/${encodeURIComponent(String(input.id))}/fund`, payload, headers);
-    return { job: data.job || data, txHash, warning };
+
+    if (job.budget == null) {
+      throw new Error(`Job ${job.id} has no budget set — cannot compute approve/fund amount.`);
+    }
+
+    let txHash: string;
+    try {
+      txHash = await fundOnChain(ctx.config, job.chain_job_id, String(job.budget));
+    } catch (err: any) {
+      throw new Error(
+        `On-chain ACP.fund failed: ${err.message}\n` +
+        `The backend row is unchanged. Verify wallet balance, allowance, and that the on-chain job is in Open state with budget set.`,
+      );
+    }
+
+    const data = await ctx.http.post<any>(
+      `/api/jobs/${encodeURIComponent(String(input.id))}/fund`,
+      { tx_hash: txHash, chain_job_id: job.chain_job_id, expected_budget: job.budget },
+      headers,
+    );
+    return { job: data.job || data, txHash, warning: null };
   },
   format(out) {
     const lines = ['', `${c.green}Job funded.${c.reset}`];

@@ -166,10 +166,11 @@ export const listingBidCmd = defineCommand({
 
 export const listingAcceptCmd = defineCommand({
   name: 'listing.accept',
-  summary: 'Accept a bid (auto-creates an ACP job on-chain).',
+  summary: 'Accept a bid — creates the ACP job on-chain with budget set, then records it on the backend.',
   input: {
     id: { type: 'string', description: 'Listing id', positional: 0, required: true },
     bid: { type: 'string', description: 'Bid id to accept', required: true },
+    'off-chain': { type: 'boolean', description: 'Accept without broadcasting to ACP (trust-based)', default: false },
   },
   examples: ['obolos listing accept abc123 --bid bid456'],
   mcp: { expose: true, destructive: true },
@@ -178,24 +179,42 @@ export const listingAcceptCmd = defineCommand({
     const listingData = await ctx.http.get<any>(`/api/listings/${encodeURIComponent(String(input.id))}`);
     const listing = listingData.listing || listingData;
     const acceptedBid = (listing.bids || []).find((b: any) => b.id === input.bid);
-    let chainJobId: string | null = null, chainTxHash: string | null = null, warning: string | null = null;
+    if (!acceptedBid) throw new Error(`Bid ${input.bid} not found on listing ${input.id}`);
 
-    if (acceptedBid && ctx.config.privateKey) {
-      try {
-        const clientAddr = (await getAccount(ctx.config)).address;
-        const durationHours = acceptedBid.delivery_time || listing.job_duration || 168;
-        const expiredAt = Math.floor((Date.now() + durationHours * 3600000) / 1000);
-        const description = `${listing.title}: ${listing.description || ''}`.slice(0, 500);
-        const result = await createJobOnChain(ctx.config, {
-          provider: acceptedBid.provider_address || ZERO_ADDRESS,
-          evaluator: listing.preferred_evaluator || clientAddr,
-          expiredAt,
-          description,
-        });
-        chainJobId = result.chainJobId;
-        chainTxHash = result.txHash;
-      } catch (err: any) {
-        warning = `On-chain job creation failed: ${err.message}`;
+    let chainJobId: string | null = null;
+    let chainTxHash: string | null = null;
+    let setBudgetTxHash: string | null = null;
+
+    if (!input['off-chain']) {
+      if (!ctx.config.privateKey) {
+        throw new Error(
+          `No wallet configured. On-chain-by-default requires a signer; run \`obolos setup\`\n` +
+          `or pass --off-chain to accept without on-chain escrow (trust-based).`,
+        );
+      }
+      const clientAddr = (await getAccount(ctx.config)).address;
+      const durationHours = acceptedBid.delivery_time || listing.job_duration || 168;
+      const expiredAt = Math.floor((Date.now() + durationHours * 3600000) / 1000);
+      const description = `${listing.title}: ${listing.description || ''}`.slice(0, 500);
+
+      // createJob + setBudget in one helper so `obolos job fund` will
+      // succeed immediately after this without a BudgetNotSet revert.
+      const result = await createJobOnChain(ctx.config, {
+        provider: acceptedBid.provider_address,
+        evaluator: listing.preferred_evaluator || clientAddr,
+        expiredAt,
+        description,
+        budgetUsd: acceptedBid.price != null ? String(acceptedBid.price) : undefined,
+      });
+      chainJobId = result.chainJobId;
+      chainTxHash = result.txHash;
+      setBudgetTxHash = result.setBudgetTxHash;
+
+      if (!chainJobId) {
+        throw new Error(
+          `ACP.createJob broadcast but no JobCreated event parsed — refusing to mark the backend accepted.\n` +
+          `Check Basescan for tx ${chainTxHash}.`,
+        );
       }
     }
 
@@ -203,14 +222,22 @@ export const listingAcceptCmd = defineCommand({
     if (chainJobId) payload.acp_job_id = chainJobId;
     if (chainTxHash) payload.chain_tx_hash = chainTxHash;
     const data = await ctx.http.post<any>(`/api/listings/${encodeURIComponent(String(input.id))}/accept`, payload, headers);
-    return { listing: data.listing || data, jobId: data.job_id, chainJobId, chainTxHash, warning };
+    return {
+      listing: data.listing || data,
+      jobId: data.job_id,
+      chainJobId,
+      chainTxHash,
+      setBudgetTxHash,
+      warning: input['off-chain'] ? 'Accepted off-chain (trust-based). No USDC escrow.' : null,
+    };
   },
   format(out) {
     const lines = ['', `${c.green}Bid accepted.${c.reset}`];
     if (out.warning) lines.push(`${c.yellow}${out.warning}${c.reset}`);
-    if (out.jobId) lines.push(`  ${c.bold}Job ID:${c.reset}   ${out.jobId}`);
-    if (out.chainJobId) lines.push(`  ${c.bold}Chain ID:${c.reset} ${out.chainJobId}`);
-    if (out.chainTxHash) lines.push(`  ${c.bold}Tx:${c.reset}       ${c.cyan}${out.chainTxHash}${c.reset}`);
+    if (out.jobId) lines.push(`  ${c.bold}Job ID:${c.reset}      ${out.jobId}`);
+    if (out.chainJobId) lines.push(`  ${c.bold}Chain ID:${c.reset}    ${out.chainJobId}`);
+    if (out.chainTxHash) lines.push(`  ${c.bold}createJob tx:${c.reset} ${c.cyan}${out.chainTxHash}${c.reset}`);
+    if (out.setBudgetTxHash) lines.push(`  ${c.bold}setBudget tx:${c.reset} ${c.cyan}${out.setBudgetTxHash}${c.reset}`);
     lines.push('', `${c.dim}Next: obolos job fund ${out.jobId || '<job-id>'}${c.reset}`);
     return lines.join('\n');
   },
