@@ -6,6 +6,7 @@ import { jobCommands } from './jobs.js';
 import { listingCommands } from './listings.js';
 import { anpCommands } from './anp.js';
 import { setupCommands } from './setup.js';
+import { identityCommands } from './identity.js';
 
 export const registry = new Registry();
 
@@ -35,5 +36,8 @@ for (const cmd of anpCommands) registry.add(cmd);
 // Setup (wallet + MCP wiring)
 registry.add(setupCommands[0]);                         // setup
 registry.add(setupCommands[1], ['mcp']);                // setup-mcp
+
+// ERC-8004 identity (mint + manage portable on-chain agent identity)
+for (const cmd of identityCommands) registry.add(cmd);
 
 export { registry as default };
