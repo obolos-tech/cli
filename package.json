@@ -1,7 +1,7 @@
 {
   "name": "@obolos_tech/cli",
   "version": "0.5.1",
-  "description": "CLI for the Obolos x402 API marketplace — search, negotiate (ANP), and call pay-per-use APIs",
+  "description": "CLI for the Obolos x402 API marketplace \u2014 search, negotiate (ANP), and call pay-per-use APIs",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -78,5 +78,13 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
+  },
+  "homepage": "https://github.com/obolos-tech/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/obolos-tech/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/obolos-tech/cli/issues"
   }
 }
